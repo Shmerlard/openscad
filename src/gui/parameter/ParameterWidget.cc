@@ -33,9 +33,11 @@
 #include <QString>
 #include <QToolButton>
 #include <QWidget>
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <set>
@@ -183,8 +185,7 @@ void ParameterWidget::setParameters(const SourceFile *sourceFile, const std::str
   this->dependencyMap.clear();
   this->parameters.clear();
   this->evaluationContext = std::move(evaluationContext);
-  this->parameters =
-    ParameterObjects::fromSourceFile(sourceFile, this->evaluationContext->context());
+  this->parameters = ParameterObjects::fromSourceFile(sourceFile, this->evaluationContext->context());
   rebuildWidgets();
   loadSet(comboBoxPreset->currentIndex());
   updateParameterStates();
@@ -553,18 +554,76 @@ void ParameterWidget::rebuildDependencyMap()
 {
   this->dependencyMap.clear();
 
+  std::map<std::string, ParameterObject *> parametersByName;
+
   for (const auto& param_ptr : this->parameters) {
     ParameterObject *param = param_ptr.get();
+    parametersByName[param->name()] = param;
 
     for (const std::string& depName : param->getDependencies()) {
       this->dependencyMap.insert({depName, param});
     }
   }
+
+  enum class VisitState { Unvisited, Visiting, Finished };
+  std::map<ParameterObject *, VisitState> states;
+  std::vector<ParameterObject *> path;
+  std::set<std::set<std::string>> reportedCycles;
+
+  std::function<void(ParameterObject *)> visit = [&](ParameterObject *parameter) {
+    states[parameter] = VisitState::Visiting;
+    path.push_back(parameter);
+
+    for (const auto& dependencyName : parameter->getDependencies()) {
+      auto dependencyIt = parametersByName.find(dependencyName);
+      if (dependencyIt == parametersByName.end()) continue;
+
+      ParameterObject *dependency = dependencyIt->second;
+      if (states[dependency] == VisitState::Unvisited) {
+        visit(dependency);
+      } else if (states[dependency] == VisitState::Visiting) {
+        auto cycleStart = std::find(path.begin(), path.end(), dependency);
+        std::vector<ParameterObject *> cycle(cycleStart, path.end());
+        std::set<std::string> cycleNames;
+        std::string cyclePath;
+        for (auto *cycleParameter : cycle) {
+          cycleNames.insert(cycleParameter->name());
+          if (!cyclePath.empty()) cyclePath += " -> ";
+          cyclePath += cycleParameter->name();
+        }
+        cyclePath += " -> " + dependency->name();
+
+        if (reportedCycles.insert(cycleNames).second) {
+          PRINT(Message("Customizer dependency cycle detected: " + cyclePath, message_group::Error,
+                        dependency->location()));
+          for (auto *cycleParameter : cycle) {
+            PRINT(Message("Customizer cycle variable: " + cycleParameter->name(), message_group::Error,
+                          cycleParameter->location()));
+          }
+        }
+      }
+    }
+
+    path.pop_back();
+    states[parameter] = VisitState::Finished;
+  };
+
+  for (const auto& param : this->parameters) {
+    if (states[param.get()] == VisitState::Unvisited) visit(param.get());
+  }
 }
 
 void ParameterWidget::updateDependentAttributes(ParameterObject *parameter)
 {
+  std::set<ParameterObject *> visited;
+  updateDependentAttributes(parameter, visited);
+}
+
+void ParameterWidget::updateDependentAttributes(ParameterObject *parameter,
+                                                std::set<ParameterObject *>& visited)
+{
   if (!evaluationContext) return;
+  if (!visited.insert(parameter).second) return;
 
   Context *context = evaluationContext->context();
   parameter->updateContext(context);
@@ -585,6 +644,6 @@ void ParameterWidget::updateDependentAttributes(ParameterObject *parameter)
       }
     }
 
-    updateDependentAttributes(dependentParam);
+    updateDependentAttributes(dependentParam, visited);
   }
 }

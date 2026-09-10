@@ -604,6 +604,7 @@ ParameterObjects ParameterObjects::fromSourceFile(const SourceFile *sourceFile, 
     std::unique_ptr<ParameterObject> parameter =
       ParameterObject::fromAssignment(assignment.get(), context);
     if (parameter) {
+      parameter->setLocation(assignment->getExpr()->location());
       output.push_back(std::move(parameter));
     }
   }

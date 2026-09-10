@@ -57,6 +57,7 @@ private:
 
   void rebuildDependencyMap();
   void updateDependentAttributes(ParameterObject *parameter);
+  void updateDependentAttributes(ParameterObject *parameter, std::set<ParameterObject *>& visited);
 
 public:
   ParameterWidget(QWidget *parent = nullptr);
