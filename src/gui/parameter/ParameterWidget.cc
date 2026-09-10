@@ -45,8 +45,12 @@
 #include <vector>
 
 #include "core/Context.h"
+#include "core/BuiltinContext.h"
+#include "core/EvaluationSession.h"
+#include "core/ScopeContext.h"
 
 #include "core/customizer/ParameterObject.h"
+#include "platform/PlatformUtils.h"
 #include "gui/Preferences.h"
 #include "gui/parameter/GroupWidget.h"
 #include "gui/parameter/ParameterCheckBox.h"
@@ -56,6 +60,24 @@
 #include "gui/parameter/ParameterText.h"
 #include "gui/parameter/ParameterVector.h"
 #include "gui/parameter/ParameterVirtualWidget.h"
+
+class CustomizerContext
+{
+public:
+  explicit CustomizerContext(const SourceFile *sourceFile)
+    : session(PlatformUtils::resourcePath("libraries").string()),
+      builtinContext(Context::create<BuiltinContext>(&session)),
+      fileContext(Context::create<FileContext>(*builtinContext, sourceFile))
+  {
+  }
+
+  Context *context() { return fileContext.operator->(); }
+
+private:
+  EvaluationSession session;
+  ContextHandle<BuiltinContext> builtinContext;
+  ContextHandle<FileContext> fileContext;
+};
 
 ParameterWidget::ParameterWidget(QWidget *parent) : QWidget(parent)
 {
@@ -84,6 +106,8 @@ ParameterWidget::ParameterWidget(QWidget *parent) : QWidget(parent)
   connect(GlobalPreferences::inst(), &Preferences::customizerFontChanged, this,
           &ParameterWidget::setFontFamilySize);
 }
+
+ParameterWidget::~ParameterWidget() = default;
 
 // Can only be called before the initial setParameters().
 void ParameterWidget::readFile(const QString& scadFile)
@@ -138,14 +162,11 @@ void ParameterWidget::saveBackupFile(const QString& scadFile)
   sets.writeFile(getJsonFile(scadFile).toStdString());
 }
 
-void ParameterWidget::setParameters(const SourceFile *sourceFile, const std::string& source,
-                                    std::shared_ptr<const Context> context,
-                                    std::unique_ptr<EvaluationSession> session)
+void ParameterWidget::setParameters(const SourceFile *sourceFile, const std::string& source)
 {
+  auto evaluationContext = std::make_unique<CustomizerContext>(sourceFile);
   if (this->source == source) {
-    this->context = std::move(context);
-    this->session = std::move(session);
-
+    this->evaluationContext = std::move(evaluationContext);
     updateParameterStates();
     return;
   }
@@ -161,12 +182,9 @@ void ParameterWidget::setParameters(const SourceFile *sourceFile, const std::str
   this->widgets.clear();
   this->dependencyMap.clear();
   this->parameters.clear();
-  if (this->context) {
-    this->context.reset();
-  }
-  this->session = std::move(session);
-  this->context = std::move(context);
-  this->parameters = ParameterObjects::fromSourceFile(sourceFile, this->context.get());
+  this->evaluationContext = std::move(evaluationContext);
+  this->parameters =
+    ParameterObjects::fromSourceFile(sourceFile, this->evaluationContext->context());
   rebuildWidgets();
   loadSet(comboBoxPreset->currentIndex());
   updateParameterStates();
@@ -175,13 +193,15 @@ void ParameterWidget::setParameters(const SourceFile *sourceFile, const std::str
 // updates every parameter
 void ParameterWidget::updateParameterStates()
 {
-  if (!this->context) return;
+  if (!this->evaluationContext) return;
+
+  Context *context = this->evaluationContext->context();
 
   for (const auto& param : this->parameters) {
-    param->updateContext(const_cast<Context *>(this->context.get()));
+    param->updateContext(context);
   }
   for (const auto& param : this->parameters) {
-    param->updateAttributes(this->context.get());
+    param->updateAttributes(context);
     if (widgets.count(param.get())) {
       for (auto *widget : widgets.at(param.get())) {
         widget->setEnabled(!param->isLocked());
@@ -315,8 +335,8 @@ void ParameterWidget::parameterModified(bool immediate)
   if (!widget) return;
   ParameterObject *parameter = widget->getParameter();
 
-  if (parameter && this->context) {
-    parameter->updateContext(const_cast<Context *>(this->context.get()));
+  if (parameter && this->evaluationContext) {
+    parameter->updateContext(this->evaluationContext->context());
     updateDependentAttributes(parameter);
   }
   // When attempting to modify the design default, create a new set to edit.
@@ -544,9 +564,10 @@ void ParameterWidget::rebuildDependencyMap()
 
 void ParameterWidget::updateDependentAttributes(ParameterObject *parameter)
 {
-  if (!context) return;
+  if (!evaluationContext) return;
 
-  parameter->updateContext(const_cast<Context *>(this->context.get()));
+  Context *context = evaluationContext->context();
+  parameter->updateContext(context);
 
   auto range = dependencyMap.equal_range(parameter->name());
 
@@ -554,7 +575,7 @@ void ParameterWidget::updateDependentAttributes(ParameterObject *parameter)
     ParameterObject *dependentParam = it->second;
 
     if (dependentParam == parameter) continue;
-    dependentParam->updateAttributes(context.get());
+    dependentParam->updateAttributes(context);
 
     if (widgets.count(dependentParam)) {
       for (auto *widget : widgets.at(dependentParam)) {

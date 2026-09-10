@@ -38,11 +38,8 @@
 #include "gui/parameter/ParameterVirtualWidget.h"
 #include "gui/qtgettext.h"  // IWYU pragma: keep
 #include "ui_ParameterWidget.h"
-// #include "core/EvaluationSession.h"
-// #include "core/Context.h"
-
-class EvaluationSession;
 class Context;
+class CustomizerContext;
 class ParameterWidget : public QWidget, public Ui::ParameterWidget
 {
   Q_OBJECT
@@ -52,8 +49,7 @@ private:
   ParameterObjects parameters;
   std::map<ParameterObject *, std::vector<ParameterVirtualWidget *>> widgets;
   std::multimap<std::string, ParameterObject *> dependencyMap;
-  std::unique_ptr<EvaluationSession> session;
-  std::shared_ptr<const Context> context;
+  std::unique_ptr<CustomizerContext> evaluationContext;
 
   QString invalidJsonFile;  // set if a json file was read that could not be parsed
   QTimer autoPreviewTimer;
@@ -64,11 +60,11 @@ private:
 
 public:
   ParameterWidget(QWidget *parent = nullptr);
+  ~ParameterWidget() override;
   void readFile(const QString& scadFile);
   void saveFile(const QString& scadFile);
   void saveBackupFile(const QString& scadFile);
-  void setParameters(const SourceFile *sourceFile, const std::string& source,
-                     std::shared_ptr<const Context> context, std::unique_ptr<EvaluationSession> session);
+  void setParameters(const SourceFile *sourceFile, const std::string& source);
   void applyParameters(SourceFile *sourceFile);
   bool childHasFocus();
   bool isModified() const { return modified; }
